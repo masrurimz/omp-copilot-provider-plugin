@@ -40,8 +40,10 @@ async function main() {
 		assert(providerConfig, "registerProvider was not called.");
 		assert(providerConfig.name === "github-copilot-vscode", "Unexpected provider id.");
 		assert(typeof providerConfig.streamSimple === "function", "Provider is missing streamSimple.");
-			assert(Array.isArray(providerConfig.models) && providerConfig.models.length === 3, "Expected a small static custom model surface.");
+			assert(Array.isArray(providerConfig.models) && providerConfig.models.length === 23, "Expected the custom provider to mirror the installed Copilot model surface.");
 			assert(providerConfig.models.some((model: { id: string }) => model.id === "claude-sonnet-4.5"), "Expected Sonnet model to be exposed.");
+			assert(providerConfig.models.some((model: { id: string }) => model.id === "gpt-5.4"), "Expected GPT-5.4 model to be exposed.");
+			assert(providerConfig.models.some((model: { id: string }) => model.id === "grok-code-fast-1"), "Expected Grok model to be exposed.");
 
 		const stream = providerConfig.streamSimple(
 			{
