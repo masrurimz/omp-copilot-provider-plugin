@@ -73,6 +73,8 @@ It already carries forward the state needed for later Copilot request shaping:
   - default: `http://127.0.0.1:8787`
 - `OMP_COPILOT_GATEWAY_MOCK=1`
   - enables mock transport mode so the provider can be tested without a live gateway
+- `OMP_COPILOT_LOCAL_OMP_REPO`
+  - optional path to a local OMP source checkout used for delegated real-Copilot transport
 
 ## Auth behavior
 
@@ -150,6 +152,7 @@ What is verified in this repo:
 - custom provider registration works at `ModelRegistry.registerProvider(...)`
 - Copilot OAuth credentials resolve correctly through the custom provider
 - custom transport receives the request
+- real Copilot requests can delegate through OMP's official provider streamers from a local OMP source checkout
 
 ## Actual OMP CLI smoke test
 
@@ -158,6 +161,10 @@ For a real end-to-end local check with mock mode:
 - `OMP_COPILOT_GATEWAY_MOCK=1 omp --model github-copilot-vscode/claude-haiku-4.5 -p "hello"`
 
 In this environment, the installed global `omp` binary successfully enters the custom transport path for the custom provider when using the command above.
+
+For a local source-run check against real GitHub Copilot upstream transport:
+
+- `OMP_COPILOT_LOCAL_OMP_REPO=/home/zahid/work/labs/oh-my-pi bun /home/zahid/work/labs/oh-my-pi/packages/coding-agent/src/cli.ts --extension /home/zahid/work/labs/omp-copilot-provider-plugin --model github-copilot-vscode/gpt-5.1-codex-mini -p "hello"`
 
 ## Auth integration status
 
@@ -169,9 +176,9 @@ Current behavior:
 - preserves official refresh semantics for the custom provider
 - preserves official enterprise/base-url resolution logic
 
-## What still remains
+## Remaining work
 
-This scaffold intentionally stops short of full Copilot shaping. The next layer is to connect it to the real Copilot adapter/gateway and enrich the transport with:
+This scaffold now delegates real requests into OMP's official Copilot provider streamers when the base URL resolves to GitHub Copilot. The next layer is to enrich the transport with:
 
 - Copilot-specific headers (`X-Initiator`, interaction/task headers)
 - continuation chaining (`previous_response_id` or equivalent)

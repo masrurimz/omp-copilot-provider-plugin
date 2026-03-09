@@ -1,15 +1,34 @@
 import { createHash, randomUUID } from "node:crypto";
+import { resolve as resolvePath } from "node:path";
+import { pathToFileURL } from "node:url";
 import { SimpleAssistantEventStream } from "./event-stream";
 import { observe } from "./observability";
 
 export const CUSTOM_API_ID = "omp-copilot-gateway-chat";
 const PROVIDER_SESSION_STATE_KEY = "omp-copilot-gateway-provider";
+const OFFICIAL_PROVIDER_ID = "github-copilot";
+const DEFAULT_LOCAL_OMP_REPO = resolvePath(new URL("../../oh-my-pi/", import.meta.url).pathname);
+const COPILOT_STATIC_HEADERS = {
+	"User-Agent": "GitHubCopilotChat/0.35.0",
+	"Editor-Version": "vscode/1.107.0",
+	"Editor-Plugin-Version": "copilot-chat/0.35.0",
+	"Copilot-Integration-Id": "vscode-chat",
+} as const;
+
+type DelegateApi = "anthropic-messages" | "openai-completions" | "openai-responses";
 
 type ModelLike = {
-  id: string;
-  provider: string;
-  baseUrl?: string;
-  headers?: Record<string, string>;
+	id: string;
+	provider: string;
+	baseUrl?: string;
+	headers?: Record<string, string>;
+	name?: string;
+	reasoning?: boolean;
+	input?: Array<"text" | "image">;
+	cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	contextWindow?: number;
+	maxTokens?: number;
+	premiumMultiplier?: number;
 };
 
 type MessageLike = {
@@ -72,12 +91,23 @@ type GatewayJsonResponse = {
 };
 
 function normalizeBaseUrl(value?: string): string {
-  const base = value?.trim() || process.env.OMP_COPILOT_GATEWAY_BASE_URL || "http://127.0.0.1:8787";
-  return base.endsWith("/") ? base.slice(0, -1) : base;
+	const base = value?.trim() || process.env.OMP_COPILOT_GATEWAY_BASE_URL || "http://127.0.0.1:8787";
+	return base.endsWith("/") ? base.slice(0, -1) : base;
 }
 
 function isMockMode(baseUrl: string): boolean {
-  return process.env.OMP_COPILOT_GATEWAY_MOCK === "1" || baseUrl.startsWith("mock://");
+	return process.env.OMP_COPILOT_GATEWAY_MOCK === "1" || baseUrl.startsWith("mock://");
+}
+
+function shouldUseOfficialDelegate(baseUrl: string): boolean {
+	if (process.env.OMP_COPILOT_GATEWAY_FORCE_HTTP === "1") return false;
+	return /githubcopilot\.com/i.test(baseUrl);
+}
+
+function resolveDelegateApi(modelId: string): DelegateApi {
+	if (/^claude-(haiku|sonnet|opus)-4([.-]|$)/.test(modelId)) return "anthropic-messages";
+	if (modelId.startsWith("gpt-5") || modelId.startsWith("oswe")) return "openai-responses";
+	return "openai-completions";
 }
 
 function summarizeContent(content: unknown): string {
@@ -185,17 +215,144 @@ function buildGatewayRequest(model: ModelLike, context: ContextLike, options: St
 }
 
 function buildHeaders(model: ModelLike, options: StreamOptionsLike): Headers {
-  const headers = new Headers({
-    "content-type": "application/json",
-    accept: "application/json, text/event-stream",
-    ...model.headers,
-    ...options.headers,
-  });
-  const token = options.apiKey || process.env.OMP_COPILOT_GATEWAY_API_KEY;
-  if (token && !headers.has("authorization")) {
-    headers.set("authorization", `Bearer ${token}`);
-  }
-  return headers;
+	const headers = new Headers({
+		"content-type": "application/json",
+		accept: "application/json, text/event-stream",
+		...model.headers,
+		...options.headers,
+	});
+	const token = options.apiKey || process.env.OMP_COPILOT_GATEWAY_API_KEY;
+	if (token && !headers.has("authorization")) {
+		headers.set("authorization", `Bearer ${token}`);
+	}
+	return headers;
+}
+
+function normalizeToolArguments(argumentsValue: unknown): Record<string, unknown> {
+	if (!argumentsValue) return {};
+	if (typeof argumentsValue === "string") {
+		try {
+			const parsed = JSON.parse(argumentsValue) as unknown;
+			return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : {};
+		} catch {
+			return {};
+		}
+	}
+	return typeof argumentsValue === "object" && !Array.isArray(argumentsValue)
+		? (argumentsValue as Record<string, unknown>)
+		: {};
+}
+
+function extractDelegateErrorMessage(event: { reason?: string; error?: unknown }): string {
+	const errorRecord = event.error as Record<string, unknown> | undefined;
+	if (typeof errorRecord?.errorMessage === "string" && errorRecord.errorMessage.length > 0) {
+		return errorRecord.errorMessage;
+	}
+	const content = errorRecord?.content;
+	if (Array.isArray(content)) {
+		const first = content[0] as Record<string, unknown> | undefined;
+		if (typeof first?.text === "string" && first.text.length > 0) {
+			return first.text;
+		}
+	}
+	return event.reason ?? "Official delegate stream failed";
+}
+
+type OfficialDelegates = {
+	streamAnthropic: (model: unknown, context: unknown, options: unknown) => unknown;
+	streamOpenAICompletions: (model: unknown, context: unknown, options: unknown) => unknown;
+	streamOpenAIResponses: (model: unknown, context: unknown, options: unknown) => unknown;
+};
+
+let cachedDelegates: Promise<OfficialDelegates> | undefined;
+
+async function loadOfficialDelegates(): Promise<OfficialDelegates> {
+	if (cachedDelegates) return cachedDelegates;
+	const repoRoot = process.env.OMP_COPILOT_LOCAL_OMP_REPO || DEFAULT_LOCAL_OMP_REPO;
+	const anthropicUrl = pathToFileURL(resolvePath(repoRoot, "packages/ai/src/providers/anthropic.ts")).href;
+	const openAICompletionsUrl = pathToFileURL(resolvePath(repoRoot, "packages/ai/src/providers/openai-completions.ts")).href;
+	const openAIResponsesUrl = pathToFileURL(resolvePath(repoRoot, "packages/ai/src/providers/openai-responses.ts")).href;
+	cachedDelegates = Promise.all([
+		import(anthropicUrl),
+		import(openAICompletionsUrl),
+		import(openAIResponsesUrl),
+	]).then(([anthropicModule, completionsModule, responsesModule]) => {
+		observe("transport.delegate_loaded", {
+			repoRoot,
+			anthropicUrl,
+			openAICompletionsUrl,
+			openAIResponsesUrl,
+		});
+		return {
+			streamAnthropic: anthropicModule.streamAnthropic,
+			streamOpenAICompletions: completionsModule.streamOpenAICompletions,
+			streamOpenAIResponses: responsesModule.streamOpenAIResponses,
+		};
+	});
+	return cachedDelegates;
+}
+
+function buildDelegateModel(model: ModelLike): Record<string, unknown> {
+	const delegateApi = resolveDelegateApi(model.id);
+	const delegateModel = {
+		id: model.id,
+		name: model.name ?? model.id,
+		api: delegateApi,
+		provider: OFFICIAL_PROVIDER_ID,
+		baseUrl: normalizeBaseUrl(model.baseUrl),
+		headers: {
+			...COPILOT_STATIC_HEADERS,
+			...(model.headers ?? {}),
+		},
+		reasoning: Boolean(model.reasoning),
+		input: model.input ?? ["text"],
+		cost: model.cost ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+		contextWindow: model.contextWindow ?? 128_000,
+		maxTokens: model.maxTokens ?? 8_192,
+		premiumMultiplier: model.premiumMultiplier,
+	};
+	observe("transport.delegate_model", {
+		provider: model.provider,
+		delegateProvider: OFFICIAL_PROVIDER_ID,
+		model: model.id,
+		api: delegateApi,
+		baseUrl: delegateModel.baseUrl,
+	});
+	return delegateModel;
+}
+
+async function streamViaOfficialDelegate(model: ModelLike, context: ContextLike, options: StreamOptionsLike): Promise<unknown> {
+	const delegates = await loadOfficialDelegates();
+	const delegateModel = buildDelegateModel(model);
+	const delegateContext = {
+		systemPrompt: context.system,
+		messages: context.messages,
+		tools: context.tools,
+	};
+	const delegateOptions = {
+		...options,
+		onPayload(payload: unknown) {
+			observe("transport.delegate_payload", {
+				provider: model.provider,
+				model: model.id,
+				payloadType: typeof payload,
+			});
+			options.onPayload?.(payload);
+		},
+	};
+	const api = resolveDelegateApi(model.id);
+	observe("transport.delegate_start", {
+		provider: model.provider,
+		model: model.id,
+		api,
+	});
+	if (api === "anthropic-messages") {
+		return delegates.streamAnthropic(delegateModel, delegateContext, delegateOptions);
+	}
+	if (api === "openai-responses") {
+		return delegates.streamOpenAIResponses(delegateModel, delegateContext, delegateOptions);
+	}
+	return delegates.streamOpenAICompletions(delegateModel, delegateContext, delegateOptions);
 }
 
 function streamMockResponse(model: ModelLike, payload: GatewayRequest) {
@@ -292,9 +449,8 @@ async function applySseResponse(stream: SimpleAssistantEventStream, response: Re
 }
 
 export function streamCopilotGateway(model: ModelLike, context: ContextLike, options: StreamOptionsLike = {}) {
-  const payload = buildGatewayRequest(model, context, options);
-  options.onPayload?.(payload);
-  const baseUrl = normalizeBaseUrl(model.baseUrl);
+	const payload = buildGatewayRequest(model, context, options);
+	const baseUrl = normalizeBaseUrl(model.baseUrl);
 	observe("transport.start", {
 		provider: model.provider,
 		model: model.id,
@@ -302,14 +458,76 @@ export function streamCopilotGateway(model: ModelLike, context: ContextLike, opt
 		mock: isMockMode(baseUrl),
 		sessionId: options.sessionId,
 	});
-  if (isMockMode(baseUrl)) {
-    return streamMockResponse(model, payload);
-  }
+	if (isMockMode(baseUrl)) {
+		options.onPayload?.(payload);
+		return streamMockResponse(model, payload);
+	}
+	if (shouldUseOfficialDelegate(baseUrl)) {
+		const stream = new SimpleAssistantEventStream(model.provider, model.id);
+		queueMicrotask(async () => {
+			try {
+				const delegated = await streamViaOfficialDelegate(model, context, options);
+				observe("transport.delegate_stream_ready", {
+					provider: model.provider,
+					model: model.id,
+					hasStream: Boolean(delegated),
+				});
+				if (!delegated) {
+					throw new Error("Official delegate did not return an async event stream.");
+				}
+				const officialStream = delegated as AsyncIterable<{
+					type: string;
+					delta?: string;
+					reason?: "stop" | "length" | "toolUse" | "error" | "aborted";
+					error?: unknown;
+					toolCall?: { name?: string; arguments?: unknown; id?: string };
+				}>;
+				if (typeof officialStream[Symbol.asyncIterator] !== "function") {
+					throw new Error("Official delegate did not return an async iterable stream.");
+				}
+				let finalized = false;
+				for await (const event of officialStream) {
+					if (event.type === "text_delta" && typeof event.delta === "string") {
+						stream.appendText(event.delta);
+						continue;
+					}
+					if (event.type === "toolcall_end" && event.toolCall?.name) {
+						stream.addToolCall(
+							event.toolCall.name,
+							normalizeToolArguments(event.toolCall.arguments),
+							event.toolCall.id,
+						);
+						continue;
+					}
+					if (event.type === "done") {
+						stream.done(event.reason === "toolUse" || event.reason === "length" ? event.reason : "stop");
+						finalized = true;
+						break;
+					}
+					if (event.type === "error") {
+						stream.fail(event.reason === "aborted" ? "aborted" : "error", extractDelegateErrorMessage(event));
+						finalized = true;
+						break;
+					}
+				}
+				if (!finalized) {
+					stream.done("stop");
+				}
+			} catch (error) {
+				observe("transport.fail", {
+					error: error instanceof Error ? error.message : String(error),
+				});
+				stream.fail("error", error instanceof Error ? error.message : String(error));
+			}
+		});
+		return stream;
+	}
 
 	const stream = new SimpleAssistantEventStream(model.provider, model.id);
 	const url = `${baseUrl}/v1/omp/copilot/chat`;
 	queueMicrotask(async () => {
 		try {
+			options.onPayload?.(payload);
 			observe("transport.request", {
 				url,
 				headers: Object.fromEntries(buildHeaders(model, options).entries()),
