@@ -1,0 +1,20 @@
+{
+  "name": "omp-copilot-provider-plugin",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Local OMP extension that registers a custom GitHub Copilot gateway provider.",
+  "scripts": {
+    "smoke": "bun run ./scripts/smoke.ts",
+    "verify:omp": "bun run ./scripts/verify-omp.ts"
+  },
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": "*"
+  },
+  "omp": {
+    "name": "Copilot Gateway Provider",
+    "description": "Registers a custom GitHub Copilot provider path for OMP via the extension API.",
+    "extensions": [
+      "./src/extension.ts"
+    ]
+  }
+}
