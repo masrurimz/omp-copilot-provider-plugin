@@ -23,6 +23,7 @@ async function main() {
 					getOAuthCredential() {
 						return undefined;
 					},
+					async set() {},
 				};
 			},
 		},
@@ -37,13 +38,13 @@ async function main() {
 		const descriptor = await extension(pi);
 		assert(descriptor.name === "copilot-gateway-provider", "Extension returned an unexpected descriptor name.");
 		assert(providerConfig, "registerProvider was not called.");
-		assert(providerConfig.name === "github-copilot", "Unexpected provider id.");
+		assert(providerConfig.name === "github-copilot-vscode", "Unexpected provider id.");
 		assert(typeof providerConfig.streamSimple === "function", "Provider is missing streamSimple.");
-		assert(Array.isArray(providerConfig.models) && providerConfig.models.length > 10, "Official Copilot model surface was not loaded.");
+		assert(Array.isArray(providerConfig.models) && providerConfig.models.length === 2, "Expected a small static custom model surface.");
 
 		const stream = providerConfig.streamSimple(
 			{
-			id: "gpt-5",
+				id: "claude-haiku-4.5",
 				provider: providerConfig.name,
 				baseUrl: "mock://local",
 				headers: {},

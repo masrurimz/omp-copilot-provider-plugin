@@ -23,6 +23,12 @@ async function main() {
 		const store = await AuthCredentialStore.open(dbPath);
 		const authStorage = new AuthStorage(store);
 		const modelRegistry = new ModelRegistry(authStorage, path.join(tempDir, "models.yml"));
+		await authStorage.set("github-copilot", {
+			type: "oauth",
+			access: "copilot_access_token",
+			refresh: "copilot_refresh_token",
+			expires: Date.now() + 60_000,
+		});
 
 		await extension({
 			pi: {
@@ -38,15 +44,11 @@ async function main() {
 			},
 		});
 
-		const model = modelRegistry.find("github-copilot", "gpt-5");
+		const model = modelRegistry.find("github-copilot-vscode", "claude-haiku-4.5");
 		assert(model, "OMP ModelRegistry did not register the custom provider model.");
-		await authStorage.set("github-copilot", {
-			type: "oauth",
-			access: "copilot_access_token",
-			refresh: "copilot_refresh_token",
-			expires: Date.now() + 60_000,
-		});
-		const available = modelRegistry.getAvailable().some(entry => entry.provider === "github-copilot");
+		const mirrored = authStorage.getOAuthCredential("github-copilot-vscode");
+		assert(mirrored?.access === "copilot_access_token", "Official Copilot OAuth was not mirrored into the custom provider.");
+		const available = modelRegistry.getAvailable().some(entry => entry.provider === "github-copilot-vscode");
 		assert(available, "Custom provider model is not reported as available by OMP ModelRegistry.");
 		const apiKey = await modelRegistry.getApiKey(model, "verify-omp");
 		assert(apiKey === "copilot_access_token", "Provider API key resolution did not use Copilot OAuth credentials.");
@@ -58,7 +60,7 @@ async function main() {
 					model: model.id,
 					api: model.api,
 					baseUrl: model.baseUrl,
-					modelCount: modelRegistry.getAll().filter(entry => entry.provider === "github-copilot").length,
+					modelCount: modelRegistry.getAll().filter(entry => entry.provider === "github-copilot-vscode").length,
 					available,
 					apiKeyResolved: Boolean(apiKey),
         },

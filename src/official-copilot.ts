@@ -1,18 +1,5 @@
 import { observe } from "./observability";
 
-type OfficialCopilotModel = {
-	id: string;
-	name: string;
-	api: string;
-	reasoning: boolean;
-	input: string[];
-	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
-	contextWindow: number;
-	maxTokens: number;
-	headers?: Record<string, string>;
-	compat?: Record<string, unknown>;
-};
-
 type OAuthCredentials = {
 	refresh: string;
 	access: string;
@@ -24,14 +11,13 @@ type OAuthCredentials = {
 };
 
 type OfficialCopilotSupport = {
-	getBundledModels(provider: "github-copilot"): OfficialCopilotModel[];
 	getGitHubCopilotBaseUrl(token?: string, enterpriseDomain?: string): string;
 	loginGitHubCopilot(options: {
 		onAuth: (url: string, instructions?: string) => void;
 		onPrompt: (prompt: { message: string; placeholder?: string; allowEmpty?: boolean }) => Promise<string>;
 		onProgress?: (message: string) => void;
 		signal?: AbortSignal;
-	}): Promise<OAuthCredentials>;
+	}, enabledModelIds?: string[]): Promise<OAuthCredentials>;
 	refreshGitHubCopilotToken(token: string, enterpriseDomain?: string): Promise<OAuthCredentials>;
 };
 
@@ -179,13 +165,6 @@ async function pollForGitHubAccessToken(
 	throw new Error("Device flow timed out");
 }
 
-async function loadBundledModels() {
-	const modelsModuleUrl = new URL("../../oh-my-pi/packages/ai/src/models.ts", import.meta.url);
-	const modelsModule = await import(modelsModuleUrl.href);
-	observe("official_copilot.models.ready", { modelsModuleUrl: modelsModuleUrl.href });
-	return modelsModule.getBundledModels as OfficialCopilotSupport["getBundledModels"];
-}
-
 async function refreshGitHubCopilotToken(refreshToken: string, enterpriseDomain?: string): Promise<OAuthCredentials> {
 	const raw = await fetchJson(getUrls(enterpriseDomain || "github.com").copilotTokenUrl, {
 		headers: {
@@ -205,15 +184,11 @@ async function refreshGitHubCopilotToken(refreshToken: string, enterpriseDomain?
 	};
 }
 
-async function enableAllGitHubCopilotModels(
-	getBundledModels: OfficialCopilotSupport["getBundledModels"],
-	token: string,
-	enterpriseDomain?: string,
-) {
+async function enableCopilotModels(token: string, modelIds: string[], enterpriseDomain?: string) {
 	await Promise.all(
-		getBundledModels("github-copilot").map(async model => {
+		modelIds.map(async modelId => {
 			try {
-				await fetch(`${getGitHubCopilotBaseUrl(token, enterpriseDomain)}/models/${model.id}/policy`, {
+				await fetch(`${getGitHubCopilotBaseUrl(token, enterpriseDomain)}/models/${modelId}/policy`, {
 					method: "POST",
 					headers: {
 						"Content-Type": "application/json",
@@ -230,8 +205,8 @@ async function enableAllGitHubCopilotModels(
 }
 
 async function loginGitHubCopilot(
-	getBundledModels: OfficialCopilotSupport["getBundledModels"],
 	options: Parameters<OfficialCopilotSupport["loginGitHubCopilot"]>[0],
+	enabledModelIds: string[] = [],
 ): Promise<OAuthCredentials> {
 	const input = await options.onPrompt({
 		message: "GitHub Enterprise URL/domain (blank for github.com)",
@@ -253,8 +228,10 @@ async function loginGitHubCopilot(
 		options.signal,
 	);
 	const credentials = await refreshGitHubCopilotToken(githubAccessToken, enterpriseDomain ?? undefined);
-	options.onProgress?.("Enabling models...");
-	await enableAllGitHubCopilotModels(getBundledModels, credentials.access, enterpriseDomain ?? undefined);
+	if (enabledModelIds.length > 0) {
+		options.onProgress?.("Enabling models...");
+		await enableCopilotModels(credentials.access, enabledModelIds, enterpriseDomain ?? undefined);
+	}
 	return credentials;
 }
 
@@ -263,13 +240,11 @@ export function loadOfficialCopilotSupport(): Promise<OfficialCopilotSupport> {
 	cachedSupport = (async () => {
 		try {
 			observe("official_copilot.load_support.begin");
-			const getBundledModels = await loadBundledModels();
-			observe("official_copilot.load_support.ready", { modelSource: "local-omp-models" });
+			observe("official_copilot.load_support.ready", { modelSource: "self-contained" });
 			return {
-				getBundledModels,
 				getGitHubCopilotBaseUrl,
-				loginGitHubCopilot(options) {
-					return loginGitHubCopilot(getBundledModels, options);
+				loginGitHubCopilot(options, enabledModelIds) {
+					return loginGitHubCopilot(options, enabledModelIds);
 				},
 				refreshGitHubCopilotToken,
 			};

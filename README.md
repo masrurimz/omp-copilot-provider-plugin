@@ -4,13 +4,13 @@ This repository contains a local OMP extension package that registers a custom G
 
 The point of this scaffold is to keep Copilot request-shaping logic out of OMP core and move it into a provider path we control. The long-term behavioral reference is **VS Code Copilot Chat**.
 
-This revision now targets the same provider id as official OMP Copilot:
+This revision now targets a separate custom provider id:
 
-- `github-copilot`
+- `github-copilot-vscode`
 
 So the intended split is:
 
-- official OMP Copilot auth/model semantics
+- official OMP Copilot auth semantics
 - custom VS Code-like request/call shaping
 
 ## Repo path
@@ -33,10 +33,10 @@ OMP already supports runtime provider registration from extensions.
 - `src/extension.ts`
   - OMP extension entrypoint
 - `src/provider.ts`
-  - overrides provider `github-copilot`
-  - reuses the official Copilot model surface and auth bridge
+  - registers provider `github-copilot-vscode`
+  - mirrors official `github-copilot` auth into the live session and exposes a small cheap model list for testing
 - `src/official-copilot.ts`
-  - loads official Copilot helpers from the sibling OMP repo during local development
+  - contains a self-contained Copilot login / refresh / base-url bridge
 - `src/gateway-client.ts`
   - custom `streamSimple` transport
   - maintains provider session state for conversation / interaction / task identity
@@ -50,9 +50,11 @@ OMP already supports runtime provider registration from extensions.
 
 ## Registered provider
 
-- provider id: `github-copilot`
+- provider id: `github-copilot-vscode`
 - custom api id: `omp-copilot-gateway-chat`
-- models: the plugin loads the same bundled GitHub Copilot model surface used by the local OMP source tree
+- models:
+  - `github-copilot-vscode/claude-haiku-4.5`
+  - `github-copilot-vscode/gpt-5.1-codex-mini`
 
 The transport is intentionally **gateway-oriented** rather than pretending to be OMP’s built-in Copilot provider.
 
@@ -74,19 +76,14 @@ It already carries forward the state needed for later Copilot request shaping:
 
 ## Auth behavior
 
-This plugin is designed to follow official OMP Copilot auth behavior as closely as possible while overriding transport.
+This plugin is designed to follow official OMP Copilot auth behavior as closely as possible while using a custom provider id.
 
-- provider id stays `github-copilot`
-- Copilot OAuth login/refresh/base-url helpers are delegated to official OMP source helpers
-- the plugin registers an OAuth bridge so the overridden provider still satisfies OMP runtime validation and token refresh expectations
+- official Copilot credentials are read from `github-copilot`
+- the current Copilot access token is injected into the custom provider config for the live session
+- Copilot OAuth login/refresh/base-url helpers are implemented locally in the plugin
+- the plugin also registers an OAuth bridge for `github-copilot-vscode` so `/login` can work directly if needed
 
-### Local-dev assumption
-
-For now this plugin expects the sibling OMP repo to exist at:
-
-- `/home/zahid/work/labs/oh-my-pi`
-
-That is how it reuses the official Copilot helpers without patching OMP core.
+This version no longer depends on the sibling OMP source tree for model definitions.
 
 ## Recommended local dev install/load path
 
@@ -141,8 +138,8 @@ This verifies:
 This verifies:
 
 - the extension registers the provider through OMP’s real model registry path
-- the provider id remains `github-copilot`
-- the official Copilot model surface is replaced with the custom transport-backed version
+- the provider id is `github-copilot-vscode`
+- official `github-copilot` OAuth is mirrored into the custom provider session
 - OMP reports the provider as available and resolves Copilot OAuth credentials correctly
 
 ## Verified status
@@ -150,28 +147,26 @@ This verifies:
 What is verified in this repo:
 
 - extension loads
-- same-id provider override works at `ModelRegistry.registerProvider(...)`
-- official Copilot model ids are present
-- Copilot OAuth credentials resolve correctly through the overridden provider
+- custom provider registration works at `ModelRegistry.registerProvider(...)`
+- Copilot OAuth credentials resolve correctly through the custom provider
 - custom transport receives the request
 
 ## Actual OMP CLI smoke test
 
 For a real end-to-end local check with mock mode:
 
-- `OMP_COPILOT_GATEWAY_MOCK=1 omp -e /home/zahid/work/labs/omp-copilot-provider-plugin --model github-copilot/gpt-5 -p "hello"`
+- `OMP_COPILOT_GATEWAY_MOCK=1 omp --model github-copilot-vscode/claude-haiku-4.5 -p "hello"`
 
-In this environment, the source-level integration is verified, but the currently installed global `omp` binary still does not appear to honor the override transport early enough for a full CLI end-to-end proof. Use the repo smoke tests plus a local/newer OMP build for reliable validation.
+In this environment, the installed global `omp` binary successfully enters the custom transport path for the custom provider when using the command above.
 
 ## Auth integration status
 
-This scaffold now bridges to the **official Copilot login / refresh / base-url helpers** from the local OMP repo.
+This scaffold now bridges to official-style Copilot login / refresh / base-url behavior using a self-contained implementation in the plugin.
 
 Current behavior:
 
-- preserves provider id `github-copilot`
 - preserves official Copilot login semantics
-- preserves official refresh semantics for the overridden provider
+- preserves official refresh semantics for the custom provider
 - preserves official enterprise/base-url resolution logic
 
 ## What still remains
@@ -183,8 +178,12 @@ This scaffold intentionally stops short of full Copilot shaping. The next layer 
 - tool-result / retry / resume semantics aligned with VS Code Copilot Chat
 - richer tool-call streaming
 
-## Same-id override caveat
+## Runtime observability
 
-Because OMP runtime provider validation expects auth metadata for providers that define models, this plugin currently registers an OAuth bridge for the same provider id (`github-copilot`).
+Use these flags when validating that OMP is routing requests into the plugin:
 
-That is intentional so the overridden provider can keep using official Copilot auth semantics. In practice this should be safe for the transport override path, but some raw provider-list UIs may still show duplicate provider metadata until OMP’s extension/runtime UX is tightened upstream.
+- `OMP_COPILOT_PROVIDER_OBSERVE=1`
+- `OMP_COPILOT_PROVIDER_OBSERVE_FILE=/tmp/omp-copilot-provider.ndjson`
+- `OMP_COPILOT_PROVIDER_OBSERVE_STDERR=1`
+
+For a successful routed request you should see `transport.start` in the log.
