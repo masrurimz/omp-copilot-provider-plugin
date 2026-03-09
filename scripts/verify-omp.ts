@@ -52,6 +52,11 @@ async function main() {
 		assert(available, "Custom provider model is not reported as available by OMP ModelRegistry.");
 		const apiKey = await modelRegistry.getApiKey(model, "verify-omp");
 		assert(apiKey === "copilot_access_token", "Provider API key resolution did not use Copilot OAuth credentials.");
+			await modelRegistry.refresh("never");
+			const refreshedModel = modelRegistry.find("github-copilot-vscode", "claude-haiku-4.5");
+			assert(refreshedModel, "Custom provider model disappeared after ModelRegistry.refresh().");
+			const refreshedAvailable = modelRegistry.getAvailable().some(entry => entry.provider === "github-copilot-vscode");
+			assert(refreshedAvailable, "Custom provider model is not available after ModelRegistry.refresh().");
 
     console.log(
       JSON.stringify(
@@ -62,6 +67,7 @@ async function main() {
 					baseUrl: model.baseUrl,
 					modelCount: modelRegistry.getAll().filter(entry => entry.provider === "github-copilot-vscode").length,
 					available,
+					availableAfterRefresh: refreshedAvailable,
 					apiKeyResolved: Boolean(apiKey),
         },
         null,

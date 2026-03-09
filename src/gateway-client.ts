@@ -306,46 +306,46 @@ export function streamCopilotGateway(model: ModelLike, context: ContextLike, opt
     return streamMockResponse(model, payload);
   }
 
-  const stream = new SimpleAssistantEventStream(model.provider, model.id);
-  const url = `${baseUrl}/v1/omp/copilot/chat`;
-  queueMicrotask(async () => {
-    try {
+	const stream = new SimpleAssistantEventStream(model.provider, model.id);
+	const url = `${baseUrl}/v1/omp/copilot/chat`;
+	queueMicrotask(async () => {
+		try {
 			observe("transport.request", {
 				url,
 				headers: Object.fromEntries(buildHeaders(model, options).entries()),
 			});
-      const response = await fetch(url, {
-        method: "POST",
-        headers: buildHeaders(model, options),
-        body: JSON.stringify(payload),
-        signal: options.signal,
-      });
-      if (!response.ok) {
-        const body = await response.text().catch(() => "");
+			const response = await fetch(url, {
+				method: "POST",
+				headers: buildHeaders(model, options),
+				body: JSON.stringify(payload),
+				signal: options.signal,
+			});
+			if (!response.ok) {
+				const body = await response.text().catch(() => "");
 				observe("transport.response_error", {
 					status: response.status,
 					statusText: response.statusText,
 					body,
 				});
-        throw new Error(`Gateway request failed (${response.status}): ${body || response.statusText}`);
-      }
-      const contentType = response.headers.get("content-type") ?? "";
+				throw new Error(`Gateway request failed (${response.status}): ${body || response.statusText}`);
+			}
+			const contentType = response.headers.get("content-type") ?? "";
 			observe("transport.response", {
 				status: response.status,
 				contentType,
 			});
-      if (contentType.includes("text/event-stream")) {
-        await applySseResponse(stream, response);
-        return;
-      }
-      const json = (await response.json()) as GatewayJsonResponse;
-      applyJsonResponse(stream, json);
-    } catch (error) {
+			if (contentType.includes("text/event-stream")) {
+				await applySseResponse(stream, response);
+				return;
+			}
+			const json = (await response.json()) as GatewayJsonResponse;
+			applyJsonResponse(stream, json);
+		} catch (error) {
 			observe("transport.fail", {
 				error: error instanceof Error ? error.message : String(error),
 			});
-      stream.fail("error", error instanceof Error ? error.message : String(error));
-    }
-  });
-  return stream;
+			stream.fail("error", error instanceof Error ? error.message : String(error));
+		}
+	});
+	return stream;
 }
