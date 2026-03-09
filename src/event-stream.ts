@@ -9,6 +9,8 @@ export type AssistantMessageLike = {
   content: AssistantPart[];
   provider: string;
   model: string;
+  api?: string;
+  providerPayload?: unknown;
   usage: {
     input: number;
     output: number;
@@ -20,6 +22,7 @@ export type AssistantMessageLike = {
   stopReason: StopReason;
   timestamp: number;
   duration?: number;
+  ttft?: number;
   errorMessage?: string;
 };
 
@@ -96,6 +99,21 @@ export class SimpleAssistantEventStream implements AsyncIterable<AssistantEventL
 
   result(): Promise<AssistantMessageLike> {
     return this.#resultPromise;
+  }
+
+  mergeDelegateMetadata(message: Partial<AssistantMessageLike> & Record<string, unknown>): void {
+    const { role, provider, model, content, usage, ...rest } = message;
+    Object.assign(this.#message, structuredClone(rest));
+    if (usage) {
+      this.#message.usage = {
+        ...this.#message.usage,
+        ...structuredClone(usage),
+        cost: {
+          ...this.#message.usage.cost,
+          ...(structuredClone(usage.cost) as AssistantMessageLike["usage"]["cost"] | undefined),
+        },
+      };
+    }
   }
 
   start(): void {

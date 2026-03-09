@@ -500,11 +500,13 @@ export function streamCopilotGateway(model: ModelLike, context: ContextLike, opt
 						continue;
 					}
 					if (event.type === "done") {
+						stream.mergeDelegateMetadata(event.message as Record<string, unknown>);
 						stream.done(event.reason === "toolUse" || event.reason === "length" ? event.reason : "stop");
 						finalized = true;
 						break;
 					}
 					if (event.type === "error") {
+						stream.mergeDelegateMetadata(event.error as Record<string, unknown>);
 						stream.fail(event.reason === "aborted" ? "aborted" : "error", extractDelegateErrorMessage(event));
 						finalized = true;
 						break;
